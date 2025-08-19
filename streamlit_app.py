@@ -43,7 +43,12 @@ from statsmodels.tsa.seasonal import seasonal_decompose
 from statsmodels.stats.multicomp import pairwise_tukeyhsd
 from statsmodels.stats.outliers_influence import variance_inflation_factor
 
-st.set_page_config(page_title="CSV 통계분석 웹앱 (베타)", page_icon="📊", layout="wide")
+st.set_page_config(
+    page_title="CSV 통계분석 웹앱 (베타)", 
+    page_icon="📊", 
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
 # =============================================================
 #  유틸: 타입 추론
@@ -158,6 +163,91 @@ def _auc_level(auc: float) -> str:
     if auc is None or not np.isfinite(auc):
         return "–"
     return "무작위에 가까움" if auc < 0.6 else ("낮음" if auc < 0.7 else ("보통" if auc < 0.8 else ("좋음" if auc < 0.9 else "매우 좋음")))
+
+# =============================================================
+#  시각적 해석 도구
+# =============================================================
+
+def create_significance_badge(p_value: float) -> str:
+    """통계적 유의성 배지 생성"""
+    if p_value < 0.001:
+        return "🟩 **매우 유의함** (p<0.001)"
+    elif p_value < 0.01:
+        return "🟢 **유의함** (p<0.01)"
+    elif p_value < 0.05:
+        return "🟡 **유의함** (p<0.05)"
+    elif p_value < 0.1:
+        return "🟠 **경계적** (p<0.1)"
+    else:
+        return "🔴 **유의하지 않음** (p≥0.1)"
+
+def create_effect_size_badge(effect_size: float, effect_type: str) -> str:
+    """효과크기 배지 생성"""
+    if effect_type == "cohen_d":
+        abs_effect = abs(effect_size) if np.isfinite(effect_size) else 0
+        if abs_effect >= 0.8:
+            return "🔥 **큰 효과**"
+        elif abs_effect >= 0.5:
+            return "📈 **중간 효과**"
+        elif abs_effect >= 0.2:
+            return "📊 **작은 효과**"
+        else:
+            return "📉 **무시할 수 있는 효과**"
+    elif effect_type == "eta_squared":
+        if effect_size >= 0.14:
+            return "🔥 **큰 효과**"
+        elif effect_size >= 0.06:
+            return "📈 **중간 효과**"
+        elif effect_size >= 0.01:
+            return "📊 **작은 효과**"
+        else:
+            return "📉 **무시할 수 있는 효과**"
+    elif effect_type == "r_squared":
+        if effect_size >= 0.7:
+            return "🔥 **매우 강한 설명력**"
+        elif effect_size >= 0.5:
+            return "📈 **강한 설명력**"
+        elif effect_size >= 0.3:
+            return "📊 **보통 설명력**"
+        else:
+            return "📉 **약한 설명력**"
+    return ""
+
+def create_correlation_badge(corr_value: float) -> str:
+    """상관계수 배지 생성"""
+    abs_corr = abs(corr_value) if np.isfinite(corr_value) else 0
+    if abs_corr >= 0.8:
+        return "🔥 **매우 강한 상관**"
+    elif abs_corr >= 0.6:
+        return "📈 **강한 상관**"
+    elif abs_corr >= 0.4:
+        return "📊 **중간 상관**"
+    elif abs_corr >= 0.2:
+        return "📉 **약한 상관**"
+    else:
+        return "➖ **거의 무상관**"
+
+def create_progress_bar(value: float, max_value: float, label: str) -> str:
+    """진행률 바 생성"""
+    percentage = (value / max_value) * 100 if max_value > 0 else 0
+    percentage = min(100, max(0, percentage))
+    
+    filled_blocks = int(percentage / 10)
+    empty_blocks = 10 - filled_blocks
+    
+    bar = "█" * filled_blocks + "░" * empty_blocks
+    return f"{label}: {bar} {percentage:.1f}%"
+
+def display_metric_card(title: str, value: str, delta: str = None, color: str = "normal"):
+    """메트릭 카드 표시"""
+    if color == "good":
+        st.success(f"**{title}**: {value}" + (f" ({delta})" if delta else ""))
+    elif color == "warning":
+        st.warning(f"**{title}**: {value}" + (f" ({delta})" if delta else ""))
+    elif color == "error":
+        st.error(f"**{title}**: {value}" + (f" ({delta})" if delta else ""))
+    else:
+        st.info(f"**{title}**: {value}" + (f" ({delta})" if delta else ""))
 
 # =============================================================
 #  로딩/전처리
@@ -282,28 +372,74 @@ def run_correlation(df: pd.DataFrame, numeric_cols: List[str]):
     corr_p = df[cols].corr(method="pearson")
     corr_s = df[cols].corr(method="spearman")
 
-    st.markdown("**피어슨 상관행렬**")
-    fig1 = px.imshow(corr_p, text_auto=True, aspect="auto")
-    st.plotly_chart(fig1, use_container_width=True)
-
-    st.markdown("**스피어만 상관행렬**")
-    fig2 = px.imshow(corr_s, text_auto=True, aspect="auto")
-    st.plotly_chart(fig2, use_container_width=True)
-
+    # 상관분석 요약 대시보드
+    st.markdown("### 📊 상관분석 요약")
+    
     try:
         a = corr_p.abs()
         upper = a.where(np.triu(np.ones(a.shape), k=1).astype(bool))
         pairs = upper.stack().sort_values(ascending=False)
-        top = pairs.head(min(3, len(pairs)))
-        top_lines = [f"- {i}–{j}: r={corr_p.loc[i, j]:.2f} (|r|={v:.2f})" for (i, j), v in top.items()]
+        
+        if len(pairs) > 0:
+            max_corr = pairs.max()
+            strong_pairs = (pairs >= 0.8).sum()
+            moderate_pairs = ((pairs >= 0.5) & (pairs < 0.8)).sum()
+            weak_pairs = (pairs < 0.3).sum()
+            
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                color = "good" if max_corr < 0.8 else "warning" if max_corr < 0.9 else "error"
+                display_metric_card("최대 상관계수", f"{max_corr:.3f}", color=color)
+            
+            with col2:
+                color = "error" if strong_pairs > 0 else "good"
+                display_metric_card("강한 상관 (≥0.8)", f"{strong_pairs}개", color=color)
+            
+            with col3:
+                display_metric_card("중간 상관 (0.5-0.8)", f"{moderate_pairs}개", color="normal")
+            
+            with col4:
+                display_metric_card("약한 상관 (<0.3)", f"{weak_pairs}개", color="normal")
+
+    except Exception:
+        pass
+
+    st.markdown("**피어슨 상관행렬**")
+    fig1 = px.imshow(corr_p, text_auto=True, aspect="auto", color_continuous_scale="RdBu_r")
+    st.plotly_chart(fig1, use_container_width=True)
+
+    st.markdown("**스피어만 상관행렬**")
+    fig2 = px.imshow(corr_s, text_auto=True, aspect="auto", color_continuous_scale="RdBu_r")
+    st.plotly_chart(fig2, use_container_width=True)
+
+    # 상위 상관쌍 분석
+    try:
+        a = corr_p.abs()
+        upper = a.where(np.triu(np.ones(a.shape), k=1).astype(bool))
+        pairs = upper.stack().sort_values(ascending=False)
+        top = pairs.head(min(5, len(pairs)))
+        
+        if len(top) > 0:
+            st.markdown("### 🔍 주요 상관관계")
+            for (i, j), v in top.items():
+                corr_val = corr_p.loc[i, j]
+                badge = create_correlation_badge(corr_val)
+                direction = "양의 상관" if corr_val > 0 else "음의 상관"
+                st.markdown(f"**{i} ↔ {j}**: {corr_val:.3f} {badge} ({direction})")
+        
         strong_flag = (pairs.max() if len(pairs) > 0 else 0) >= 0.8
+        if strong_flag:
+            st.warning("⚠️ **주의**: |r|≥0.8인 강한 상관쌍이 존재합니다. 회귀분석 시 다중공선성을 확인하세요!")
+        
+        top_lines = [f"- {i}–{j}: r={corr_p.loc[i, j]:.2f} ({create_correlation_badge(corr_p.loc[i, j])})" for (i, j), v in top.items()]
     except Exception:
         top_lines, strong_flag = [], False
 
     md_lines = [
         "### 상관분석 결과",
         "피어슨/스피어만 상관을 계산했습니다.",
-        "**상위 상관쌍 (피어슨, 상위 3개):**",
+        "**주요 상관쌍:**",
     ] + (top_lines if top_lines else ["- (충분한 쌍이 없음)"])
     if strong_flag:
         md_lines.append("⚠️ |r|≥0.8인 강한 상관쌍 존재 → 다중공선성 주의")
@@ -348,6 +484,24 @@ def run_group_compare(df: pd.DataFrame, numeric_cols: List[str], cat_cols: List[
             test_name = "독립표본 t-검정 (Welch)"
             eff = cohen_d(g1, g2)
 
+        # 결과 대시보드
+        st.markdown("### 📊 검정 결과 요약")
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            sig_badge = create_significance_badge(p)
+            st.markdown(f"**통계적 유의성**\n\n{sig_badge}")
+        
+        with col2:
+            if not np.isnan(eff):
+                effect_badge = create_effect_size_badge(eff, "cohen_d")
+                st.markdown(f"**효과 크기**\n\n{effect_badge}\n\nCohen's d = {eff:.3f}")
+        
+        with col3:
+            mean1, mean2 = np.mean(g1), np.mean(g2)
+            diff = abs(mean1 - mean2)
+            st.markdown(f"**평균 차이**\n\n{diff:.3f}\n\n{levels[0]}: {mean1:.2f}\n{levels[1]}: {mean2:.2f}")
+
         result_md.append(f"**검정:** {test_name}\n\n**p-value:** {p:.4g}")
         if not np.isnan(eff):
             result_md.append(f"**효과크기 (Cohen's d):** {eff:.3f}")
@@ -356,7 +510,8 @@ def run_group_compare(df: pd.DataFrame, numeric_cols: List[str], cat_cols: List[
             interp += f" / 효과크기: {eff:.2f} ({_cohen_d_level(eff)})"
         result_md.append(interp)
 
-        fig = px.box(groups, x=cat, y=num, points="all")
+        fig = px.box(groups, x=cat, y=num, points="all", color=cat)
+        fig.update_layout(showlegend=False)
         st.plotly_chart(fig, use_container_width=True)
     else:
         data_groups = [groups[groups[cat] == lv][num].dropna().values for lv in groups[cat].unique()]
@@ -380,6 +535,25 @@ def run_group_compare(df: pd.DataFrame, numeric_cols: List[str], cat_cols: List[
             test_name = "일원분산분석 (ANOVA)"
             eta2 = eta_squared_anova(data_groups)
 
+        # 결과 대시보드
+        st.markdown("### 📊 검정 결과 요약")
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            sig_badge = create_significance_badge(p)
+            st.markdown(f"**통계적 유의성**\n\n{sig_badge}")
+        
+        with col2:
+            if not np.isnan(eta2):
+                effect_badge = create_effect_size_badge(eta2, "eta_squared")
+                st.markdown(f"**효과 크기**\n\n{effect_badge}\n\nEta² = {eta2:.3f}")
+        
+        with col3:
+            group_means = [np.mean(g) for g in data_groups]
+            overall_mean = np.mean([val for group in data_groups for val in group])
+            variability = np.std(group_means)
+            st.markdown(f"**그룹 간 변동성**\n\n{variability:.3f}\n\n전체 평균: {overall_mean:.2f}")
+
         result_md.append(f"**검정:** {test_name}\n\n**p-value:** {p:.4g}")
         if not np.isnan(eta2):
             result_md.append(f"**효과크기 (Eta²):** {eta2:.3f}")
@@ -388,7 +562,8 @@ def run_group_compare(df: pd.DataFrame, numeric_cols: List[str], cat_cols: List[
             interp += f" / 효과크기: {eta2:.2f} ({_eta2_level(eta2)})"
         result_md.append(interp)
 
-        fig = px.box(groups, x=cat, y=num, points="all")
+        fig = px.box(groups, x=cat, y=num, points="all", color=cat)
+        fig.update_layout(showlegend=False)
         st.plotly_chart(fig, use_container_width=True)
 
     st.markdown("\n".join(result_md))
@@ -450,29 +625,73 @@ def run_linear_regression(df: pd.DataFrame, target: str, exclude_cols: List[str]
     rmse = float(np.sqrt(mean_squared_error(y_test, y_pred)))
     r2 = float(r2_score(y_test, y_pred))
 
-    st.markdown(f"**RMSE:** {rmse:.4g}  |  **R²:** {r2:.4g}")
+    # 회귀분석 결과 대시보드
+    st.markdown("### 📊 회귀분석 결과 요약")
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        r2_badge = create_effect_size_badge(r2, "r_squared")
+        display_metric_card("결정계수 (R²)", f"{r2:.3f}", r2_badge.split("**")[1].split("**")[0], 
+                          "good" if r2 >= 0.7 else "warning" if r2 >= 0.5 else "error")
+    
+    with col2:
+        try:
+            y_sd = float(np.std(y_test.values, ddof=1))
+            rel_rmse = rmse / y_sd if y_sd > 0 else np.nan
+            if np.isfinite(rel_rmse):
+                color = "good" if rel_rmse < 0.5 else "warning" if rel_rmse < 1.0 else "error"
+                display_metric_card("상대 RMSE", f"{rel_rmse:.3f}", "표준편차 대비", color)
+        except Exception:
+            display_metric_card("RMSE", f"{rmse:.4g}", color="normal")
+    
+    with col3:
+        mae = float(np.mean(np.abs(y_test - y_pred)))
+        display_metric_card("평균 절대 오차", f"{mae:.3f}", color="normal")
+    
+    with col4:
+        mape = float(np.mean(np.abs((y_test - y_pred) / y_test)) * 100) if np.all(y_test != 0) else np.nan
+        if np.isfinite(mape):
+            color = "good" if mape < 10 else "warning" if mape < 20 else "error"
+            display_metric_card("MAPE", f"{mape:.1f}%", color=color)
 
     try:
         y_sd = float(np.std(y_test.values, ddof=1))
         rel_rmse = rmse / y_sd if y_sd > 0 else np.nan
     except Exception:
         rel_rmse = np.nan
+    
     interp_lr = f"**해석:** 설명력 R²={r2:.2f} ({_r2_level(r2)})"
     if np.isfinite(rel_rmse):
         grade = "양호" if rel_rmse < 0.5 else ("보통" if rel_rmse < 1.0 else "낮음")
-        interp_lr += f" / 상대 RMSE(표준편차 대비)={rel_rmse:.2f} → 예측 {grade}"
+        interp_lr += f" / 상대 RMSE(표준편차 대비)={rel_rmse:.2f} → 예측 성능 {grade}"
     st.markdown(interp_lr)
 
+    # 예측 vs 실제 그래프 (개선된 시각화)
     df_plot = pd.DataFrame({"실제": y_test.values, "예측": y_pred})
-    fig = px.scatter(df_plot, x="실제", y="예측", trendline="ols")
+    fig = px.scatter(df_plot, x="실제", y="예측", trendline="ols", 
+                     title="예측값 vs 실제값 (대각선에 가까울수록 좋음)")
+    
+    # 완벽한 예측 라인 추가 (y=x)
+    min_val, max_val = min(y_test.min(), y_pred.min()), max(y_test.max(), y_pred.max())
+    fig.add_shape(type="line", x0=min_val, y0=min_val, x1=max_val, y1=max_val,
+                  line=dict(color="red", dash="dash"), name="완벽한 예측")
+    
     st.plotly_chart(fig, use_container_width=True)
+
+    # 잔차 플롯
+    residuals = y_test - y_pred
+    fig_resid = px.scatter(x=y_pred, y=residuals, labels={"x": "예측값", "y": "잔차"},
+                           title="잔차 플롯 (무작위 분포가 이상적)")
+    fig_resid.add_hline(y=0, line_dash="dash", line_color="red")
+    st.plotly_chart(fig_resid, use_container_width=True)
 
     try:
         X_design = pre.transform(X_train)
         X_design = sm.add_constant(X_design)
         ols_model = sm.OLS(y_train, X_design).fit()
-        st.markdown("**계수 요약 (학습세트, OLS)**")
-        st.text(ols_model.summary())
+        
+        with st.expander("📋 상세 통계 요약 보기"):
+            st.text(ols_model.summary())
     except Exception as e:
         st.info(f"계수 요약 생성 중 스킵: {e}")
 
@@ -642,25 +861,83 @@ def run_time_series(df: pd.DataFrame, datetime_cols: List[str], numeric_cols: Li
 
 def run_insights(df: pd.DataFrame, it: InferredTypes):
     st.subheader("💡 자동 인사이트")
+    
+    # 전체 데이터 요약 대시보드
+    st.markdown("### 📊 데이터 전체 요약")
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        total_missing = df.isna().sum().sum()
+        total_cells = len(df) * len(df.columns)
+        missing_pct = (total_missing / total_cells) * 100 if total_cells > 0 else 0
+        color = "good" if missing_pct < 5 else "warning" if missing_pct < 15 else "error"
+        display_metric_card("전체 결측률", f"{missing_pct:.1f}%", f"{total_missing:,}개", color)
+    
+    with col2:
+        duplicates = df.duplicated().sum()
+        dup_pct = (duplicates / len(df)) * 100 if len(df) > 0 else 0
+        color = "good" if dup_pct < 1 else "warning" if dup_pct < 5 else "error"
+        display_metric_card("중복 행", f"{dup_pct:.1f}%", f"{duplicates}개", color)
+    
+    with col3:
+        display_metric_card("데이터 크기", f"{len(df):,}×{len(df.columns)}", color="normal")
+    
+    with col4:
+        numeric_cols = len(it.numeric)
+        cat_cols = len(it.categorical + it.boolean)
+        display_metric_card("변수 구성", f"수치:{numeric_cols}, 범주:{cat_cols}", color="normal")
+
     parts: List[str] = ["### 자동 인사이트 요약"]
 
-    # 결측 상위
+    # 결측 상위 (시각화 개선)
     miss = df.isna().mean().sort_values(ascending=False)
-    miss_top = miss.head(5)[miss.head(5) > 0]
+    miss_top = miss.head(10)[miss.head(10) > 0]
     if not miss_top.empty:
-        st.markdown("**결측 상위 컬럼**")
-        st.dataframe(miss_top.to_frame("결측비율"))
-        parts.append("**결측 상위**\n" + "\n".join([f"- {c}: {v:.1%}" for c, v in miss_top.items()]))
+        st.markdown("### 🔍 결측값 분석")
+        
+        # 결측률 차트
+        fig_missing = px.bar(x=miss_top.values, y=miss_top.index, orientation='h',
+                           title="컬럼별 결측률", labels={"x": "결측률", "y": "컬럼"})
+        fig_missing.update_layout(yaxis={'categoryorder':'total ascending'})
+        st.plotly_chart(fig_missing, use_container_width=True)
+        
+        # 심각한 결측 경고
+        severe_missing = miss_top[miss_top > 0.5]
+        if not severe_missing.empty:
+            st.error(f"🚨 **심각한 결측**: {len(severe_missing)}개 컬럼이 50% 이상 결측")
+            for col, rate in severe_missing.items():
+                st.markdown(f"- **{col}**: {rate:.1%} 결측")
+        
+        parts.append("**결측 상위**\n" + "\n".join([f"- {c}: {v:.1%}" for c, v in miss_top.head(5).items()]))
 
-    # 상관 상위
+    # 상관 상위 (시각화 개선)
     if len(it.numeric) >= 2:
+        st.markdown("### 🔗 강한 상관관계")
         corr = df[it.numeric].corr(numeric_only=True).abs()
         upper = corr.where(np.triu(np.ones(corr.shape), k=1).astype(bool))
-        pairs = upper.stack().sort_values(ascending=False).head(3)
+        pairs = upper.stack().sort_values(ascending=False).head(5)
+        
         if len(pairs) > 0:
-            parts.append("**강한 상관(상위 3)**\n" + "\n".join([f"- {i}–{j}: |r|={v:.2f}" for (i, j), v in pairs.items()]))
+            # 상관관계 차트
+            corr_data = pd.DataFrame({
+                '변수쌍': [f"{i} ↔ {j}" for (i, j), v in pairs.items()],
+                '상관계수': pairs.values
+            })
+            
+            fig_corr = px.bar(corr_data, x='상관계수', y='변수쌍', orientation='h',
+                            title="강한 상관관계 Top 5", color='상관계수',
+                            color_continuous_scale='Reds')
+            st.plotly_chart(fig_corr, use_container_width=True)
+            
+            # 다중공선성 경고
+            strong_corr = pairs[pairs >= 0.8]
+            if len(strong_corr) > 0:
+                st.warning(f"⚠️ **다중공선성 주의**: {len(strong_corr)}개 쌍이 |r|≥0.8")
+            
+            parts.append("**강한 상관(상위 5)**\n" + "\n".join([f"- {i}–{j}: |r|={v:.2f}" for (i, j), v in pairs.items()]))
 
-    # 간단 집단차이 스캔 (상위 3개)
+    # 집단차이 스캔 (시각화 개선)
+    st.markdown("### 🧪 그룹 간 유의한 차이 탐지")
     hits: List[Tuple[float, str]] = []
     cats = (it.categorical + it.boolean)[:5]
     for cat in cats:
@@ -678,9 +955,52 @@ def run_insights(df: pd.DataFrame, it: InferredTypes):
                     hits.append((p, f"{num} ~ {cat}"))
                 except Exception:
                     continue
-    hits = sorted(hits, key=lambda x: x[0])[:3]
+    
+    hits = sorted(hits, key=lambda x: x[0])[:10]
     if hits:
-        parts.append("**집단 간 차이 감지(ANOVA, 상위 3)**\n" + "\n".join([f"- {name}: p={p:.3g}" for p, name in hits]))
+        # 유의성 차트
+        sig_data = pd.DataFrame({
+            '변수쌍': [name for p, name in hits],
+            'p-value': [p for p, name in hits],
+            '유의성': ['매우 유의' if p < 0.001 else '유의' if p < 0.05 else '경계적' if p < 0.1 else '비유의' for p, name in hits]
+        })
+        
+        fig_sig = px.bar(sig_data.head(8), x='p-value', y='변수쌍', orientation='h',
+                        title="집단 간 차이 유의성 (ANOVA p-value)", color='유의성',
+                        color_discrete_map={'매우 유의': 'darkgreen', '유의': 'green', 
+                                          '경계적': 'orange', '비유의': 'red'})
+        fig_sig.add_vline(x=0.05, line_dash="dash", line_color="red", 
+                         annotation_text="p=0.05 (유의성 기준)")
+        st.plotly_chart(fig_sig, use_container_width=True)
+        
+        # 매우 유의한 차이 강조
+        very_sig = [name for p, name in hits if p < 0.001]
+        if very_sig:
+            st.success(f"🎯 **매우 유의한 차이 발견**: {len(very_sig)}개")
+            for name in very_sig[:5]:
+                st.markdown(f"- {name}")
+        
+        parts.append("**집단 간 차이 감지(ANOVA, 상위 5)**\n" + "\n".join([f"- {name}: {create_significance_badge(p)}" for p, name in hits[:5]]))
+
+    # 이상치 간단 탐지
+    if it.numeric:
+        st.markdown("### 🚨 이상치 간단 탐지")
+        outlier_summary = []
+        
+        for col in it.numeric[:5]:  # 상위 5개 수치 컬럼만
+            s = df[col].dropna()
+            if len(s) > 0:
+                q1, q3 = np.percentile(s, [25, 75])
+                iqr = q3 - q1
+                outliers = ((s < q1 - 1.5 * iqr) | (s > q3 + 1.5 * iqr)).sum()
+                outlier_pct = (outliers / len(s)) * 100
+                outlier_summary.append({'컬럼': col, '이상치_개수': outliers, '이상치_비율': outlier_pct})
+        
+        if outlier_summary:
+            outlier_df = pd.DataFrame(outlier_summary)
+            fig_outlier = px.bar(outlier_df, x='컬럼', y='이상치_비율',
+                               title="컬럼별 이상치 비율 (IQR 기준)")
+            st.plotly_chart(fig_outlier, use_container_width=True)
 
     return "\n".join(parts), None
 
@@ -903,8 +1223,42 @@ def run_regression_diagnostics(df: pd.DataFrame, target_hint: Optional[str]):
 #  메인 UI
 # =============================================================
 
-st.title("📊 CSV로 하는 통계분석 웹앱 (베타)")
-st.caption("파일을 올리면 데이터 타입에 맞춰 가능한 분석을 제안하고, 원하는 분석을 실행합니다.")
+st.title("📊 스마트 CSV 통계분석 도구")
+st.markdown("""
+<div style="padding: 1rem; background-color: #f0f2f6; border-radius: 0.5rem; margin-bottom: 1rem;">
+    <h4>🎯 이 도구의 특징</h4>
+    <ul>
+        <li><strong>자동 분석 제안</strong>: 데이터 타입을 자동으로 분석하여 적합한 통계분석을 추천합니다</li>
+        <li><strong>직관적인 결과</strong>: 색상 코딩과 시각적 지표로 결과를 쉽게 이해할 수 있습니다</li>
+        <li><strong>초보자 친화적</strong>: 복잡한 통계 용어를 쉬운 말로 설명합니다</li>
+        <li><strong>종합 보고서</strong>: 모든 분석 결과를 정리된 보고서로 다운로드할 수 있습니다</li>
+    </ul>
+</div>
+""", unsafe_allow_html=True)
+
+# 도움말 확장 가능한 섹션
+with st.expander("❓ 사용법 및 도움말"):
+    st.markdown("""
+    ### 📋 기본 사용법
+    1. **CSV 파일 업로드**: 왼쪽 사이드바에서 CSV 파일을 선택하고 업로드하세요
+    2. **타겟 변수 설정** (선택사항): 예측하고 싶은 변수가 있다면 타겟 변수로 설정하세요
+    3. **분석 선택**: 추천된 분석 목록에서 원하는 분석을 선택하세요
+    4. **결과 확인**: 색상 코딩된 결과와 해석을 확인하세요
+    5. **보고서 다운로드**: 분석이 완료되면 전체 보고서를 다운로드하세요
+    
+    ### 🎨 결과 해석 가이드
+    - **🟩 초록색**: 좋은 결과나 권장 상태
+    - **🟡 노란색**: 주의가 필요한 상태  
+    - **🔴 빨간색**: 문제가 있거나 개선이 필요한 상태
+    - **📊 진행률 바**: 각종 지표의 수준을 시각적으로 표시
+    
+    ### 💡 분석 유형별 가이드
+    - **기초 EDA**: 데이터의 기본 특성과 분포를 파악할 때 사용
+    - **상관분석**: 변수 간의 관계를 확인할 때 사용
+    - **그룹 비교**: 범주별로 평균에 차이가 있는지 확인할 때 사용
+    - **회귀분석**: 특정 변수를 예측하고 싶을 때 사용
+    - **자동 인사이트**: 데이터에서 자동으로 패턴을 찾고 싶을 때 사용
+    """)
 
 with st.sidebar:
     st.header("1) CSV 업로드")
@@ -1018,39 +1372,245 @@ if reset_click:
 report_parts: List[str] = []
 
 if st.session_state.run and st.session_state.chosen_labels:
-    st.header("분석 결과")
+    st.header("🎯 분석 결과")
 
+    # 전체 결과 요약 섹션
+    st.markdown("### 🌟 핵심 인사이트 요약")
+    
+    # 인사이트 카드들을 위한 컨테이너
+    insight_container = st.container()
+    key_insights = []
+    
     active_labels = [lbl for lbl in st.session_state.chosen_labels if lbl in labels_map]
+    
+    # 간단한 사전 분석으로 핵심 인사이트 추출
+    with insight_container:
+        col1, col2, col3 = st.columns(3)
+        
+        # 데이터 품질 인사이트
+        with col1:
+            total_missing = df.isna().sum().sum()
+            total_cells = len(df) * len(df.columns)
+            missing_pct = (total_missing / total_cells) * 100 if total_cells > 0 else 0
+            
+            if missing_pct < 5:
+                st.success("✅ **데이터 품질 우수**\n\n결측률이 5% 미만으로 분석에 적합합니다.")
+            elif missing_pct < 15:
+                st.warning("⚠️ **데이터 품질 보통**\n\n일부 결측값이 있어 주의가 필요합니다.")
+            else:
+                st.error("🚨 **데이터 품질 주의**\n\n결측률이 높아 전처리가 필요합니다.")
+        
+        # 변수 구성 인사이트
+        with col2:
+            num_vars = len(inferred.numeric)
+            cat_vars = len(inferred.categorical + inferred.boolean)
+            
+            if num_vars >= 3 and cat_vars >= 2:
+                st.success("🎯 **분석 가능성 높음**\n\n다양한 통계분석이 가능한 데이터입니다.")
+            elif num_vars >= 2 or cat_vars >= 2:
+                st.info("📊 **기본 분석 가능**\n\n기본적인 통계분석이 가능합니다.")
+            else:
+                st.warning("📈 **제한적 분석**\n\n변수가 적어 분석이 제한적입니다.")
+        
+        # 샘플 크기 인사이트
+        with col3:
+            sample_size = len(df)
+            
+            if sample_size >= 1000:
+                st.success("📊 **충분한 샘플**\n\n통계적 검정에 적합한 크기입니다.")
+            elif sample_size >= 100:
+                st.info("📈 **적절한 샘플**\n\n기본 분석에 적합합니다.")
+            else:
+                st.warning("⚠️ **작은 샘플**\n\n결과 해석 시 주의가 필요합니다.")
+
+    st.divider()
 
     for lbl in active_labels:
         key = labels_map[lbl]
         st.divider()
         if key == "eda":
-            st.subheader("🔍 기초 EDA")
-            col = st.selectbox("분포를 보고 싶은 컬럼", options=df.columns.tolist(), key=f"eda_{lbl}")
-            show_distribution(df, col)
+            st.subheader("🔍 기초 탐색적 데이터 분석 (EDA)")
+            
+            # 컬럼 선택과 기본 정보
+            col = st.selectbox("분석할 컬럼 선택", options=df.columns.tolist(), key=f"eda_{lbl}")
             s = df[col]
+            
+            # 기본 통계 대시보드
+            st.markdown("### 📊 기본 통계 요약")
+            col1, col2, col3, col4 = st.columns(4)
+            
             miss = float(s.isna().mean())
+            with col1:
+                color = "good" if miss < 0.05 else "warning" if miss < 0.2 else "error"
+                display_metric_card("결측률", f"{miss:.1%}", f"{s.isna().sum()}개", color)
+            
+            with col2:
+                display_metric_card("총 개수", f"{len(s):,}", color="normal")
+            
+            with col3:
+                unique_count = s.nunique(dropna=True)
+                unique_pct = (unique_count / len(s.dropna())) * 100 if len(s.dropna()) > 0 else 0
+                display_metric_card("고유값", f"{unique_count:,}", f"{unique_pct:.1f}%", "normal")
+            
+            with col4:
+                data_type = "수치형" if pd.api.types.is_numeric_dtype(s) else "범주형"
+                display_metric_card("데이터 타입", data_type, color="normal")
+            
+            show_distribution(df, col)
+            
             if pd.api.types.is_numeric_dtype(s):
-                skew = float(s.dropna().skew()) if s.dropna().size > 0 else float("nan")
+                # 수치형 변수 상세 분석
+                st.markdown("### 📈 수치형 변수 상세 분석")
+                
+                s_clean = s.dropna()
+                if len(s_clean) > 0:
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.markdown("**📊 중심경향 지표**")
+                        mean_val = float(s_clean.mean())
+                        median_val = float(s_clean.median())
+                        mode_val = float(s_clean.mode().iloc[0]) if len(s_clean.mode()) > 0 else np.nan
+                        
+                        st.metric("평균 (Mean)", f"{mean_val:.3f}")
+                        st.metric("중앙값 (Median)", f"{median_val:.3f}")
+                        if np.isfinite(mode_val):
+                            st.metric("최빈값 (Mode)", f"{mode_val:.3f}")
+                    
+                    with col2:
+                        st.markdown("**📏 분산 지표**")
+                        std_val = float(s_clean.std())
+                        var_val = float(s_clean.var())
+                        cv_val = (std_val / mean_val) * 100 if mean_val != 0 else np.nan
+                        
+                        st.metric("표준편차", f"{std_val:.3f}")
+                        st.metric("분산", f"{var_val:.3f}")
+                        if np.isfinite(cv_val):
+                            st.metric("변동계수 (CV)", f"{cv_val:.1f}%")
+                    
+                    # 분포 모양 분석
+                    skew = float(s_clean.skew())
+                    kurt = float(s_clean.kurtosis())
+                    
+                    st.markdown("### 📐 분포의 모양")
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        if abs(skew) < 0.5:
+                            skew_interp = "대칭적 분포 ⚖️"
+                            skew_color = "good"
+                        elif skew > 0:
+                            skew_interp = "오른쪽 꼬리가 긴 분포 ↗️"
+                            skew_color = "warning"
+                        else:
+                            skew_interp = "왼쪽 꼬리가 긴 분포 ↖️"
+                            skew_color = "warning"
+                        
+                        display_metric_card("왜도 (Skewness)", f"{skew:.3f}", skew_interp, skew_color)
+                    
+                    with col2:
+                        if abs(kurt) < 0.5:
+                            kurt_interp = "정규분포와 비슷한 뾰족함 📊"
+                            kurt_color = "good"
+                        elif kurt > 0:
+                            kurt_interp = "정규분포보다 뾰족함 📈"
+                            kurt_color = "warning"
+                        else:
+                            kurt_interp = "정규분포보다 평평함 📉"
+                            kurt_color = "warning"
+                        
+                        display_metric_card("첨도 (Kurtosis)", f"{kurt:.3f}", kurt_interp, kurt_color)
+                    
+                    # 이상치 탐지
+                    q1, q3 = np.percentile(s_clean, [25, 75])
+                    iqr = q3 - q1
+                    outliers = ((s_clean < q1 - 1.5 * iqr) | (s_clean > q3 + 1.5 * iqr)).sum()
+                    outlier_pct = (outliers / len(s_clean)) * 100
+                    
+                    if outliers > 0:
+                        color = "warning" if outlier_pct < 5 else "error"
+                        st.markdown("### 🚨 이상치 탐지")
+                        display_metric_card("이상치 개수", f"{outliers}개", f"{outlier_pct:.1f}%", color)
+                
                 md = textwrap.dedent(f"""
-                ### 기초 EDA 요약
-                - 선택 컬럼: **{col}** (수치형)
+                ### 기초 EDA 요약 - {col} (수치형)
                 - 결측 비율: {miss:.1%}
-                - 왜도(skew): {skew:.2f} (양수: 오른쪽 꼬리, 음수: 왼쪽 꼬리)
+                - 평균: {mean_val:.3f}, 중앙값: {median_val:.3f}
+                - 왜도: {skew:.3f} ({skew_interp})
+                - 이상치: {outliers}개 ({outlier_pct:.1f}%)
                 """)
             else:
+                # 범주형 변수 상세 분석
+                st.markdown("### 📋 범주형 변수 상세 분석")
+                
                 nunq = int(s.nunique(dropna=True))
-                top3 = s.value_counts().head(3)
-                top_lines = "\n".join([f"  • {idx}: {val}" for idx, val in top3.items()])
+                value_counts = s.value_counts().head(10)
+                
+                # 빈도 차트
+                if len(value_counts) > 0:
+                    fig_freq = px.bar(x=value_counts.index.astype(str), y=value_counts.values,
+                                    title=f"상위 {min(10, len(value_counts))}개 값의 빈도")
+                    st.plotly_chart(fig_freq, use_container_width=True)
+                
+                # 분포 균등성 분석
+                total_count = s.count()
+                if total_count > 0:
+                    entropy = -sum((p := count/total_count) * np.log2(p) for count in value_counts if count > 0)
+                    max_entropy = np.log2(min(nunq, len(value_counts)))
+                    balance_ratio = entropy / max_entropy if max_entropy > 0 else 0
+                    
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        color = "good" if balance_ratio > 0.8 else "warning" if balance_ratio > 0.5 else "error"
+                        display_metric_card("분포 균등성", f"{balance_ratio:.1%}", 
+                                          "균등할수록 좋음" if balance_ratio > 0.8 else "불균등함", color)
+                    
+                    with col2:
+                        most_common_pct = (value_counts.iloc[0] / total_count) * 100
+                        color = "warning" if most_common_pct > 50 else "error" if most_common_pct > 80 else "good"
+                        display_metric_card("최빈값 비율", f"{most_common_pct:.1f}%", 
+                                          f"'{value_counts.index[0]}'", color)
+                
+                top3 = value_counts.head(3)
+                top_lines = "\n".join([f"  • {idx}: {val}개 ({val/total_count:.1%})" for idx, val in top3.items()])
+                
                 md = textwrap.dedent(f"""
-                ### 기초 EDA 요약
-                - 선택 컬럼: **{col}** (범주형, 고유값 {nunq}개)
+                ### 기초 EDA 요약 - {col} (범주형)
+                - 고유값: {nunq}개
                 - 결측 비율: {miss:.1%}
+                - 분포 균등성: {balance_ratio:.1%}
+                - 최빈값: '{value_counts.index[0]}' ({most_common_pct:.1f}%)
 
-                **상위 값(Top-3)**
+                **상위 3개 값**
                 {top_lines}
                 """)
+            
+            # 실용적인 조언 추가
+            st.markdown("### 💡 데이터 품질 조언")
+            advice = []
+            
+            if miss > 0.2:
+                advice.append("⚠️ **결측률이 높습니다** - 결측값 처리 전략을 고려하세요")
+            elif miss > 0.05:
+                advice.append("📝 **결측값이 일부 있습니다** - 분석 시 주의가 필요합니다")
+            
+            if pd.api.types.is_numeric_dtype(s):
+                if outlier_pct > 5:
+                    advice.append("🚨 **이상치가 많습니다** - 이상치 제거나 변환을 고려하세요")
+                if abs(skew) > 1:
+                    advice.append("📐 **분포가 심하게 치우쳐 있습니다** - 로그변환 등을 고려하세요")
+            else:
+                if nunq == len(s.dropna()):
+                    advice.append("🔍 **모든 값이 고유합니다** - 식별자 컬럼일 가능성이 높습니다")
+                elif balance_ratio < 0.5:
+                    advice.append("⚖️ **분포가 불균등합니다** - 클래스 불균형을 고려하세요")
+            
+            if advice:
+                for adv in advice:
+                    st.markdown(adv)
+            else:
+                st.success("✅ **데이터 품질이 양호합니다!**")
+            
             st.markdown(md)
             report_parts.append(md)
 
@@ -1112,13 +1672,91 @@ if st.session_state.run and st.session_state.chosen_labels:
 
     st.divider()
 
-    # ---------- 리포트 모드 ----------
-    report_md = "\n\n".join(report_parts)
-    with st.expander("📝 리포트 모드로 보기 (전체 요약)", expanded=False):
-        st.markdown(report_md)
-    st.download_button(
-        "📥 보고서 저장 (Markdown)",
-        data=report_md.encode("utf-8-sig"),
-        file_name="analysis_report.md",
-        mime="text/markdown",
-    )
+    # ---------- 최종 요약 및 권고사항 ----------
+    st.markdown("### 🎯 분석 완료 요약")
+    
+    summary_cols = st.columns(3)
+    with summary_cols[0]:
+        st.metric("완료된 분석", f"{len(active_labels)}개", "선택한 분석 모두 완료")
+    
+    with summary_cols[1]:
+        analyzed_rows = len(df)
+        st.metric("분석된 데이터", f"{analyzed_rows:,}행", f"{len(df.columns)}개 컬럼")
+    
+    with summary_cols[2]:
+        if "insights" in [labels_map[lbl] for lbl in active_labels]:
+            st.metric("핵심 인사이트", "포함됨", "자동 인사이트 분석 완료")
+        else:
+            st.metric("추가 분석", "가능", "더 많은 인사이트 발견 가능")
+
+    # 다음 단계 권장사항
+    st.markdown("### 💡 다음 단계 권장사항")
+    
+    next_steps = []
+    completed_keys = {labels_map[lbl] for lbl in active_labels}
+    
+    if "correlation" in completed_keys and "regdiag" not in completed_keys:
+        next_steps.append("🔍 **회귀 진단 실행** - 상관관계를 발견했다면 회귀 진단으로 다중공선성을 확인해보세요")
+    
+    if "group_compare" in completed_keys and "tukey" not in completed_keys:
+        next_steps.append("📊 **사후검정 실행** - 그룹 간 차이가 유의하다면 Tukey 검정으로 어떤 그룹끼리 다른지 확인해보세요")
+    
+    if len(inferred.numeric) >= 2 and "kmeans" not in completed_keys:
+        next_steps.append("🧩 **군집분석 고려** - 데이터에 숨겨진 패턴을 찾기 위해 K-means 분석을 해보세요")
+    
+    if target_hint and "featimp" not in completed_keys:
+        next_steps.append("🌟 **특성 중요도 분석** - 타겟 변수에 영향을 미치는 주요 변수들을 확인해보세요")
+    
+    if "outliers" not in completed_keys:
+        next_steps.append("🚨 **이상치 탐지** - 데이터 품질 향상을 위해 이상치를 확인해보세요")
+
+    if next_steps:
+        for step in next_steps:
+            st.markdown(step)
+    else:
+        st.success("🎉 **분석 완료!** 모든 주요 분석을 마쳤습니다. 결과를 바탕으로 데이터 기반 의사결정을 진행하세요.")
+
+    # ---------- 리포트 모드 ---------- 
+    st.divider()
+    st.markdown("### 📋 분석 보고서")
+    
+    # 보고서 헤더 추가
+    report_header = f"""
+# 📊 데이터 분석 보고서
+
+**분석 일시**: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}
+**데이터 크기**: {len(df):,}행 × {len(df.columns)}개 컬럼
+**실행된 분석**: {', '.join(active_labels)}
+
+---
+
+"""
+    
+    report_md = report_header + "\n\n".join(report_parts)
+    
+    # 보고서 미리보기와 다운로드
+    col1, col2 = st.columns([3, 1])
+    
+    with col1:
+        with st.expander("📝 전체 보고서 미리보기", expanded=False):
+            st.markdown(report_md)
+    
+    with col2:
+        st.download_button(
+            "📥 보고서 다운로드\n(Markdown)",
+            data=report_md.encode("utf-8-sig"),
+            file_name=f"analysis_report_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.md",
+            mime="text/markdown",
+            use_container_width=True
+        )
+        
+        # 간단한 통계 요약도 다운로드 옵션 제공
+        if not df.empty:
+            summary_stats = df.describe(include='all').to_csv()
+            st.download_button(
+                "📊 기초통계 다운로드\n(CSV)",
+                data=summary_stats.encode("utf-8-sig"),
+                file_name=f"summary_stats_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
