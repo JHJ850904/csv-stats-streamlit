@@ -306,19 +306,20 @@ def suggest_analyses(df: pd.DataFrame, it: InferredTypes, target: Optional[str])
     if target is not None and target in df.columns:
         y = df[target]
         if pd.api.types.is_numeric_dtype(y) and y.nunique(dropna=True) > 2:
-            suggestions.append(Suggestion("linreg", "선형 회귀 (예측)", f"연속형 타겟 '{target}' 예측"))
+            suggestions.append(Suggestion("linreg", f"✅ 선형 회귀 (타겟: {target})", f"연속형 타겟 '{target}' 예측 모델"))
             suggestions.append(Suggestion("regdiag", "회귀 진단 (VIF/잔차)", "다중공선성·잔차 진단"))
-            suggestions.append(Suggestion("featimp", "특성 중요도", "랜덤포레스트/퍼뮤테이션 중요도"))
+            suggestions.append(Suggestion("featimp", f"✅ 특성 중요도 (타겟: {target})", f"'{target}'에 영향을 미치는 변수 분석"))
         else:
-            suggestions.append(Suggestion("logreg", "로지스틱 회귀 (분류)", f"범주형 타겟 '{target}' 분류"))
-            suggestions.append(Suggestion("featimp", "특성 중요도", "랜덤포레스트/퍼뮤테이션 중요도"))
+            suggestions.append(Suggestion("logreg", f"✅ 로지스틱 회귀 (타겟: {target})", f"범주형 타겟 '{target}' 분류 모델"))
+            suggestions.append(Suggestion("featimp", f"✅ 특성 중요도 (타겟: {target})", f"'{target}'에 영향을 미치는 변수 분석"))
     else:
+        # 타겟이 설정되지 않은 경우
         if len(it.numeric) >= 1:
-            suggestions.append(Suggestion("linreg", "선형 회귀 (예측)", "연속형 타겟을 선택하면 진행 가능"))
+            suggestions.append(Suggestion("linreg", "⚠️ 선형 회귀 (타겟 미설정)", "실행 시 연속형 타겟을 선택해야 함"))
         binary_cats = [c for c in (it.categorical + it.boolean) if df[c].nunique(dropna=True) == 2]
         if binary_cats:
-            suggestions.append(Suggestion("logreg", "로지스틱 회귀 (분류)", "이진 타겟 선택 시 진행 가능"))
-        suggestions.append(Suggestion("featimp", "특성 중요도", "타겟 지정 후 사용"))
+            suggestions.append(Suggestion("logreg", "⚠️ 로지스틱 회귀 (타겟 미설정)", "실행 시 범주형 타겟을 선택해야 함"))
+        suggestions.append(Suggestion("featimp", "⚠️ 특성 중요도 (타겟 미설정)", "실행 시 타겟을 선택해야 함"))
     if len(it.numeric) >= 2:
         suggestions.append(Suggestion("kmeans", "KMeans 군집화", "연속형 변수들로 군집 탐색 (PCA 2D 시각화)"))
     if it.datetime and it.numeric:
@@ -1330,9 +1331,39 @@ with st.expander("데이터 개요", expanded=True):
 # 제안 생성
 suggestions = suggest_analyses(df, inferred, target_hint)
 
-st.header("가능한 분석 제안")
+st.header("🎯 가능한 분석 제안")
+
+# 타겟 설정 상태에 따른 안내
+if target_hint and target_hint in df.columns:
+    st.success(f"✅ **타겟 변수 설정됨**: {target_hint}")
+    st.info("🎯 타겟 변수가 설정되어 예측 모델링과 특성 중요도 분석이 가능합니다!")
+else:
+    st.warning("⚠️ **타겟 변수 미설정**: 예측 분석을 원한다면 사이드바에서 타겟 변수를 설정하세요.")
+    with st.expander("💡 타겟 변수란?"):
+        st.markdown("""
+        **타겟 변수**는 예측하거나 설명하고 싶은 변수입니다.
+        
+        **예시:**
+        - 고객 데이터에서 **'만족도'**를 예측하고 싶다면 → 타겟: 만족도
+        - 주택 데이터에서 **'가격'**을 예측하고 싶다면 → 타겟: 가격  
+        - 의료 데이터에서 **'질병여부'**를 예측하고 싶다면 → 타겟: 질병여부
+        
+        **타겟 설정 시 추가 분석:**
+        - ✅ 회귀/분류 예측 모델
+        - ✅ 특성 중요도 (어떤 변수가 타겟에 영향을 미치는지)
+        - ✅ 회귀 진단 (모델의 품질 검증)
+        """)
+
+st.divider()
+
+# 분석 제안 목록 (타겟 설정 여부에 따라 다르게 표시)
 for s in suggestions:
-    st.markdown(f"- **{s.label}** — {s.desc}")
+    if s.label.startswith("✅"):
+        st.success(f"**{s.label}** — {s.desc}")
+    elif s.label.startswith("⚠️"):
+        st.warning(f"**{s.label}** — {s.desc}")
+    else:
+        st.markdown(f"- **{s.label}** — {s.desc}")
 
 st.divider()
 
@@ -1628,17 +1659,43 @@ if st.session_state.run and st.session_state.chosen_labels:
             report_parts.append(md)
 
         elif key == "linreg":
-            tgt = target_hint if (target_hint and pd.api.types.is_numeric_dtype(df[target_hint])) else st.selectbox("타겟(연속형)", options=inferred.numeric)
+            if target_hint and target_hint in df.columns and pd.api.types.is_numeric_dtype(df[target_hint]):
+                # 타겟이 미리 설정된 경우
+                st.info(f"🎯 **설정된 타겟**: {target_hint}")
+                tgt = target_hint
+            else:
+                # 타겟이 없는 경우 사용자가 선택
+                st.warning("⚠️ 타겟 변수가 설정되지 않았습니다. 분석할 타겟을 선택하세요.")
+                tgt = st.selectbox("📊 예측하고 싶은 연속형 변수 선택", options=inferred.numeric)
+                if tgt:
+                    st.info(f"💡 **추천**: 다음번에는 사이드바에서 '{tgt}'를 타겟으로 미리 설정하세요!")
+            
             md, _ = run_linear_regression(df, tgt, exclude_cols=[tgt])
             report_parts.append(md)
 
         elif key == "logreg":
-            tgt = target_hint if (target_hint and not pd.api.types.is_numeric_dtype(df[target_hint])) else st.selectbox("타겟(범주형)", options=inferred.categorical + inferred.boolean)
+            if target_hint and target_hint in df.columns and not pd.api.types.is_numeric_dtype(df[target_hint]):
+                # 타겟이 미리 설정된 경우
+                st.info(f"🎯 **설정된 타겟**: {target_hint}")
+                tgt = target_hint
+            else:
+                # 타겟이 없는 경우 사용자가 선택
+                st.warning("⚠️ 타겟 변수가 설정되지 않았습니다. 분석할 타겟을 선택하세요.")
+                tgt = st.selectbox("📊 예측하고 싶은 범주형 변수 선택", options=inferred.categorical + inferred.boolean)
+                if tgt:
+                    st.info(f"💡 **추천**: 다음번에는 사이드바에서 '{tgt}'를 타겟으로 미리 설정하세요!")
+            
             md, _ = run_logistic_regression(df, tgt, exclude_cols=[tgt])
             report_parts.append(md)
 
         elif key == "featimp":
-            md, _ = run_feature_importance(df, target_hint)
+            if target_hint and target_hint in df.columns:
+                st.info(f"🎯 **설정된 타겟**: {target_hint}")
+                md, _ = run_feature_importance(df, target_hint)
+            else:
+                st.warning("⚠️ 타겟 변수가 설정되지 않았습니다. 중요도를 분석할 타겟을 선택하세요.")
+                md, _ = run_feature_importance(df, None)  # 함수 내에서 다시 선택하게 됨
+                
             st.markdown(md)
             report_parts.append(md)
 
