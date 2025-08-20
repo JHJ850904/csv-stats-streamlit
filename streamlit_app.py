@@ -1224,7 +1224,7 @@ def run_regression_diagnostics(df: pd.DataFrame, target_hint: Optional[str]):
 #  메인 UI
 # =============================================================
 
-st.title("📊 스마트 CSV 통계분석 도구")
+st.title("📊 CSV 통계분석")
 st.markdown("""
 <div style="padding: 1rem; background-color: #f0f2f6; border-radius: 0.5rem; margin-bottom: 1rem;">
     <h4>🎯 이 도구의 특징</h4>
