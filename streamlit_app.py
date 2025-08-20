@@ -722,53 +722,148 @@ def run_logistic_regression(df: pd.DataFrame, target: str, exclude_cols: List[st
     if not pd.api.types.is_numeric_dtype(y):
         y = y.astype("category").cat.codes
 
+    # 클래스별 샘플 수 확인
+    class_counts = pd.Series(y).value_counts()
+    min_class_size = class_counts.min()
+    
+    # 층화 분할 가능성 체크
+    stratify_param = None
+    if len(class_counts) > 1 and min_class_size >= 2:
+        # 각 클래스가 최소 2개 이상의 샘플을 가지고 있어야 층화 분할 가능
+        stratify_param = y
+        st.info(f"✅ 층화 분할 적용: 각 클래스별 최소 {min_class_size}개 샘플")
+    else:
+        st.warning(f"⚠️ 층화 분할 불가: 일부 클래스의 샘플이 {min_class_size}개로 부족합니다")
+
     pre, feat_names = _build_preprocess(df, x_cols)
 
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.25, random_state=42, stratify=y)
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.25, random_state=42, stratify=stratify_param)
 
-    clf = Pipeline([("pre", pre), ("model", LogisticRegression(max_iter=500))])
-    clf.fit(X_train, y_train)
-    y_pred = clf.predict(X_test)
-
-    acc = float(accuracy_score(y_test, y_pred))
-    pr, rc, f1, _ = precision_recall_fscore_support(y_test, y_pred, average="weighted")
-
-    st.markdown(f"**Accuracy:** {acc:.4g}  |  **Precision:** {pr:.4g}  |  **Recall:** {rc:.4g}  |  **F1:** {f1:.4g}")
-
+    # 로지스틱 회귀 모델 훈련 및 예측
     try:
-        if len(np.unique(y_test)) == 2:
-            y_proba = clf.predict_proba(X_test)[:, 1]
-            auc = float(roc_auc_score(y_test, y_proba))
-            fpr, tpr, thr = roc_curve(y_test, y_proba)
-            df_roc = pd.DataFrame({"FPR": fpr, "TPR": tpr})
-            fig = px.line(df_roc, x="FPR", y="TPR")
-            st.plotly_chart(fig, use_container_width=True)
-            st.markdown(f"**ROC AUC:** {auc:.4g}")
-    except Exception:
-        pass
+        clf = Pipeline([("pre", pre), ("model", LogisticRegression(max_iter=500))])
+        clf.fit(X_train, y_train)
+        y_pred = clf.predict(X_test)
+        
+        # 분류 성능 메트릭 계산
+        acc = float(accuracy_score(y_test, y_pred))
+        pr, rc, f1, _ = precision_recall_fscore_support(y_test, y_pred, average="weighted")
+        
+        # 결과 대시보드
+        st.markdown("### 📊 분류 성능 요약")
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            color = "good" if acc >= 0.8 else "warning" if acc >= 0.7 else "error"
+            display_metric_card("정확도 (Accuracy)", f"{acc:.3f}", f"{acc*100:.1f}%", color)
+        
+        with col2:
+            color = "good" if f1 >= 0.8 else "warning" if f1 >= 0.7 else "error"
+            display_metric_card("F1 점수", f"{f1:.3f}", "균형 성능 지표", color)
+        
+        with col3:
+            color = "good" if pr >= 0.8 else "warning" if pr >= 0.7 else "normal"
+            display_metric_card("정밀도 (Precision)", f"{pr:.3f}", "양성 예측의 정확도", color)
+        
+        with col4:
+            color = "good" if rc >= 0.8 else "warning" if rc >= 0.7 else "normal"
+            display_metric_card("재현율 (Recall)", f"{rc:.3f}", "실제 양성의 탐지율", color)
 
-    st.markdown("**분류 리포트**")
-    st.text(classification_report(y_test, y_pred))
-
-    try:
+        # ROC 곡선 (이진 분류인 경우)
         auc_val = None
         if len(np.unique(y_test)) == 2:
-            y_proba = clf.predict_proba(X_test)[:, 1]
-            auc_val = float(roc_auc_score(y_test, y_proba))
-    except Exception:
-        auc_val = None
-    interp_cls = f"**해석:** 정확도 {acc:.2f}, F1 {f1:.2f}"
-    if auc_val is not None and np.isfinite(auc_val):
-        interp_cls += f", AUC {auc_val:.2f} ({_auc_level(auc_val)})"
-    st.markdown(interp_cls)
+            try:
+                y_proba = clf.predict_proba(X_test)[:, 1]
+                auc_val = float(roc_auc_score(y_test, y_proba))
+                
+                st.markdown("### 📈 ROC 곡선 분석")
+                col1, col2 = st.columns([2, 1])
+                
+                with col1:
+                    fpr, tpr, thr = roc_curve(y_test, y_proba)
+                    df_roc = pd.DataFrame({"FPR (위양성률)": fpr, "TPR (진양성률)": tpr})
+                    fig = px.line(df_roc, x="FPR (위양성률)", y="TPR (진양성률)",
+                                title="ROC 곡선 (대각선에서 멀수록 좋음)")
+                    
+                    # 대각선 추가
+                    fig.add_shape(type="line", x0=0, y0=0, x1=1, y1=1,
+                                line=dict(color="red", dash="dash"), name="무작위 분류")
+                    st.plotly_chart(fig, use_container_width=True)
+                
+                with col2:
+                    auc_color = "good" if auc_val >= 0.8 else "warning" if auc_val >= 0.7 else "error"
+                    display_metric_card("ROC AUC", f"{auc_val:.3f}", _auc_level(auc_val), auc_color)
+                    
+                    st.markdown("**AUC 해석:**")
+                    st.markdown("- 1.0: 완벽한 분류")
+                    st.markdown("- 0.9~1.0: 매우 좋음")
+                    st.markdown("- 0.8~0.9: 좋음")
+                    st.markdown("- 0.7~0.8: 보통")
+                    st.markdown("- 0.5~0.7: 낮음")
+                    st.markdown("- 0.5: 무작위와 같음")
+                    
+            except Exception as e:
+                st.warning(f"ROC 분석 중 오류: {str(e)}")
+        
+        # 혼동 행렬
+        from sklearn.metrics import confusion_matrix
+        cm = confusion_matrix(y_test, y_pred)
+        
+        st.markdown("### 🎯 혼동 행렬")
+        fig_cm = px.imshow(cm, text_auto=True, aspect="auto",
+                          labels=dict(x="예측값", y="실제값", color="개수"),
+                          title="혼동 행렬 (대각선이 높을수록 좋음)")
+        st.plotly_chart(fig_cm, use_container_width=True)
+        
+        # 상세 분류 리포트
+        with st.expander("📋 상세 분류 리포트 보기"):
+            st.text(classification_report(y_test, y_pred))
+        
+        # 해석 요약
+        interp_cls = f"**해석:** 정확도 {acc:.2f} ({acc*100:.1f}%), F1 점수 {f1:.2f}"
+        if auc_val is not None and np.isfinite(auc_val):
+            interp_cls += f", ROC AUC {auc_val:.2f} ({_auc_level(auc_val)})"
+        st.markdown(interp_cls)
+        
+        # 모델 성능 조언
+        st.markdown("### 💡 모델 성능 조언")
+        advice = []
+        
+        if acc < 0.7:
+            advice.append("⚠️ **정확도가 낮습니다** - 더 많은 특성이나 다른 모델을 고려해보세요")
+        elif acc >= 0.9:
+            advice.append("🎯 **매우 좋은 정확도입니다** - 과적합 여부를 확인해보세요")
+        
+        if f1 < 0.6:
+            advice.append("📊 **F1 점수가 낮습니다** - 클래스 불균형이나 특성 선택을 검토하세요")
+        
+        if auc_val is not None:
+            if auc_val < 0.7:
+                advice.append("📈 **AUC가 낮습니다** - 분류 경계가 불분명할 수 있습니다")
+        
+        if len(class_counts) > 2 and class_counts.min() / class_counts.max() < 0.1:
+            advice.append("⚖️ **클래스 불균형이 심합니다** - SMOTE나 클래스 가중치 조정을 고려하세요")
+        
+        if advice:
+            for adv in advice:
+                st.markdown(adv)
+        else:
+            st.success("✅ **모델 성능이 양호합니다!**")
 
-    md = textwrap.dedent(f"""
-    ### 로지스틱 회귀 결과
-    - Accuracy: {acc:.4g}
-    - Precision/Recall/F1(가중): {pr:.4g}/{rc:.4g}/{f1:.4g}
-    - 해석: 정확도 {acc:.2f}, F1 {f1:.2f}{f", AUC {auc_val:.2f} ({_auc_level(auc_val)})" if auc_val is not None and np.isfinite(auc_val) else ""}
-    """)
-    return md, None
+        md = textwrap.dedent(f"""
+        ### 로지스틱 회귀 결과
+        - 정확도: {acc:.3f} ({acc*100:.1f}%)
+        - 정밀도: {pr:.3f}
+        - 재현율: {rc:.3f}
+        - F1 점수: {f1:.3f}
+        {"- ROC AUC: " + f"{auc_val:.3f} ({_auc_level(auc_val)})" if auc_val and np.isfinite(auc_val) else ""}
+        - 해석: 정확도 {acc:.2f}, F1 {f1:.2f}{f", AUC {auc_val:.2f}" if auc_val and np.isfinite(auc_val) else ""}
+        """)
+        return md, None
+        
+    except Exception as e:
+        st.error(f"로지스틱 회귀 분석 중 오류가 발생했습니다: {str(e)}")
+        return "로지스틱 회귀 분석 실패", None
 
 
 def run_kmeans(df: pd.DataFrame, numeric_cols: List[str]):
